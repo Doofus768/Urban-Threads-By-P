@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Urban Threads By P</title>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400;1,600&family=Jost:wght@200;300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{--black:#0A0A0A;--black-soft:#141414;--black-card:#1A1A1A;--gold:#C9A84C;--gold-light:#E2C97E;--gold-dim:#7A6130;--pink:#E8A0B4;--pink-soft:#F2C4D0;--white:#FAF8F5;}
@@ -364,7 +365,7 @@ footer{background:#060606;border-top:1px solid rgba(201,168,76,0.12);padding:60p
     <input type="password" id="adminPwd" placeholder="Enter your password" onkeydown="if(event.key==='Enter')checkLogin()"/>
     <div class="login-error" id="loginError">Incorrect password. Try again.</div>
     <button class="btn-save" style="width:100%;margin-top:8px;" onclick="checkLogin()">Sign In →</button>
-    <p style="font-size:0.65rem;color:rgba(250,248,245,0.2);margin-top:20px;">Default password: <span style="color:var(--gold);">xxxxxxx</span></p>
+    <p style="font-size:0.65rem;color:rgba(250,248,245,0.2);margin-top:20px;">Default password: <span style="color:var(--gold);">urbanp2025</span></p>
   </div>
 </div>
 
@@ -768,6 +769,12 @@ const LS_KEY = 'utp_data_v2';
 
 const cloudReady = JSONBIN_BIN_ID !== 'PASTE_YOUR_BIN_ID_HERE' && JSONBIN_API_KEY !== 'PASTE_YOUR_API_KEY_HERE';
 
+// ── EmailJS — order notification emails ──
+const EJS_SERVICE  = 'service_soioj3d';
+const EJS_TEMPLATE = 'template_iucv66a';
+const EJS_KEY      = '0jPYsTbTgKUmUk-ek';
+if (typeof emailjs !== 'undefined') emailjs.init(EJS_KEY);
+
 // ── localStorage helpers ──
 function lsGet() {
   try { var d = localStorage.getItem(LS_KEY); return d ? JSON.parse(d) : null; } catch(e) { return null; }
@@ -1127,24 +1134,61 @@ function buildSummary() {
 async function placeOrder() {
   var btn = document.getElementById('placeOrderBtn');
   btn.textContent = 'Processing...'; btn.disabled = true;
-  var ref = 'UTP-' + Math.floor(Math.random() * 900000 + 100000);
-  var fn  = document.getElementById('firstName').value;
-  var ln  = document.getElementById('lastName').value;
-  var sub = cart.reduce(function(a, b) { return a + b.price * b.qty; }, 0);
+  var ref  = 'UTP-' + Math.floor(Math.random() * 900000 + 100000);
+  var fn   = document.getElementById('firstName').value;
+  var ln   = document.getElementById('lastName').value;
+  var em   = document.getElementById('email').value;
+  var ph   = document.getElementById('phone').value;
+  var addr = document.getElementById('address').value;
+  var city = document.getElementById('city').value;
+  var prov = document.getElementById('province').value;
+  var sub  = cart.reduce(function(a, b) { return a + b.price * b.qty; }, 0);
+  var tot  = sub + selectedDelivery.cost;
+
+  var itemLines = cart.map(function(c) {
+    return c.emoji + ' ' + c.name + ' (Size: ' + c.size + ') x' + c.qty + '  —  R' + (c.price * c.qty);
+  }).join('\n');
+
+  var addrText = selectedDelivery.method === 'collect'
+    ? 'COLLECTION — customer will collect'
+    : addr + ', ' + city + ', ' + prov;
+
   var order = {
     ref: ref,
     name: fn + ' ' + ln,
-    email: document.getElementById('email').value,
-    total: sub + selectedDelivery.cost,
+    email: em,
+    phone: ph,
+    total: tot,
     items: cart.length,
     itemList: cart.map(function(c) { return c.name + ' (' + c.size + ') x' + c.qty; }).join(', '),
     delivery: selectedDelivery.method,
     payment: selectedPay,
+    address: addrText,
     date: new Date().toLocaleDateString('en-ZA'),
     status: 'Confirmed'
   };
+
   store.orders.unshift(order);
   dbSave();
+
+  // ── Send email notification via EmailJS ──
+  if (typeof emailjs !== 'undefined') {
+    emailjs.send(EJS_SERVICE, EJS_TEMPLATE, {
+      order_ref:       ref,
+      customer_name:   fn + ' ' + ln,
+      customer_email:  em,
+      customer_phone:  ph || 'Not provided',
+      items:           itemLines,
+      delivery:        selectedDelivery.method.charAt(0).toUpperCase() + selectedDelivery.method.slice(1),
+      payment:         selectedPay.charAt(0).toUpperCase() + selectedPay.slice(1),
+      total:           tot,
+      address:         addrText,
+      date:            new Date().toLocaleDateString('en-ZA')
+    }).catch(function(err) {
+      console.warn('Email notification failed:', err);
+    });
+  }
+
   document.getElementById('orderRef').textContent = 'Order #' + ref;
   goToStep(5);
   btn.textContent = 'Place Order ✓'; btn.disabled = false;
