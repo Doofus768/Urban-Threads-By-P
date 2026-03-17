@@ -734,8 +734,14 @@ footer{background:#060606;border-top:1px solid rgba(201,168,76,0.12);padding:60p
     <div class="pf-group">
       <label>Product Photo</label>
       <div class="pf-img-preview" id="pfImgPreview"><span class="placeholder-text">No photo yet — upload one below</span></div>
-      <input type="file" id="pf-img" accept="image/*" onchange="previewImg(this)" style="background:transparent;border:1px dashed rgba(201,168,76,0.2);color:rgba(250,248,245,0.5);padding:10px;cursor:pointer;font-size:0.75rem;width:100%;"/>
-      <p class="settings-hint">JPG, PNG or WEBP. Square image recommended (min 600×600px). Photo saves with the product.</p>
+      <input type="file" id="pf-img" accept="image/*" onchange="uploadToCloudinary(this)" style="background:transparent;border:1px dashed rgba(201,168,76,0.2);color:rgba(250,248,245,0.5);padding:10px;cursor:pointer;font-size:0.75rem;width:100%;"/>
+      <div id="uploadProgress" style="display:none;margin-top:8px;">
+        <div style="background:rgba(201,168,76,0.1);border:1px solid rgba(201,168,76,0.2);height:4px;border-radius:2px;overflow:hidden;">
+          <div id="uploadBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--gold),var(--gold-light));transition:width 0.3s;"></div>
+        </div>
+        <p style="font-size:0.65rem;color:var(--gold);margin-top:6px;letter-spacing:0.1em;">Uploading to cloud...</p>
+      </div>
+      <p class="settings-hint">☁️ Photos upload to Cloudinary and display on all devices. JPG, PNG or WEBP. Square image recommended.</p>
     </div>
     <div class="pf-actions">
       <button class="btn-cancel" onclick="closeProductForm()">Cancel</button>
@@ -796,10 +802,22 @@ async function cloudGet() {
 async function cloudSet(data) {
   if (!cloudReady) return;
   try {
+    // Strip base64 images before sending to JSONBin (free plan = 100KB limit)
+    // Cloudinary URLs are short and pass through fine — only base64 gets stripped
+    var slim = {
+      products: data.products.map(function(p) {
+        var copy = Object.assign({}, p);
+        if (copy.img && copy.img.length > 500) copy.img = ''; // strip base64, keep URLs
+        return copy;
+      }),
+      orders:   data.orders,
+      settings: data.settings,
+      pwd:      data.pwd
+    };
     await fetch(JSONBIN_URL, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY },
-      body: JSON.stringify(data)
+      body: JSON.stringify(slim)
     });
   } catch(e) {}
 }
@@ -820,7 +838,18 @@ var store = {
 
 function mergeStore(data) {
   if (!data) return;
-  if (data.products && data.products.length) store.products = data.products;
+  if (data.products && data.products.length) {
+    // Rehydrate images from localStorage
+    store.products = data.products.map(function(p) {
+      if (!p.img || p.img === '') {
+        try {
+          var saved = localStorage.getItem('utp_img_' + p.id);
+          if (saved) p.img = saved;
+        } catch(e) {}
+      }
+      return p;
+    });
+  }
   if (data.orders) store.orders = data.orders;
   if (data.settings) Object.assign(store.settings, data.settings);
   if (data.pwd) store.pwd = data.pwd;
@@ -1278,18 +1307,68 @@ function openProductForm(id) {
     document.getElementById('pf-badge').value = '';
     document.getElementById('pf-emoji').value = '👗';
     document.getElementById('pfImgPreview').innerHTML = '<span class="placeholder-text">No photo yet — upload one below</span>';
-    document.getElementById('pf-img').value = '';
+    var imgInp = document.getElementById('pf-img');
+    imgInp.value = '';
+    delete imgInp.dataset.cloudinaryUrl;
   }
   document.getElementById('productFormOverlay').classList.add('open');
 }
 
 function closeProductForm() { document.getElementById('productFormOverlay').classList.remove('open'); }
 
-function previewImg(input) {
+async function uploadToCloudinary(input) {
   if (!input.files || !input.files[0]) return;
+  var file = input.files[0];
+
+  // Show local preview immediately while uploading
   var reader = new FileReader();
-  reader.onload = function(e) { document.getElementById('pfImgPreview').innerHTML = '<img src="' + e.target.result + '" alt="preview"/>'; };
-  reader.readAsDataURL(input.files[0]);
+  reader.onload = function(e) {
+    document.getElementById('pfImgPreview').innerHTML = '<img src="' + e.target.result + '" alt="preview" style="opacity:0.5;"/>';
+  };
+  reader.readAsDataURL(file);
+
+  // Show progress bar
+  var progress = document.getElementById('uploadProgress');
+  var bar = document.getElementById('uploadBar');
+  progress.style.display = 'block';
+  bar.style.width = '30%';
+
+  // Upload to Cloudinary
+  var formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', 'urban-threads');
+  formData.append('folder', 'urban-threads-by-p');
+
+  try {
+    bar.style.width = '60%';
+    var response = await fetch('https://api.cloudinary.com/v1_1/ddwo07wp1/image/upload', {
+      method: 'POST',
+      body: formData
+    });
+    var data = await response.json();
+    bar.style.width = '100%';
+
+    if (data.secure_url) {
+      // Store the Cloudinary URL
+      document.getElementById('pfImgPreview').innerHTML = '<img src="' + data.secure_url + '" alt="preview"/>';
+      // Store URL on the input element for saveProduct to pick up
+      input.dataset.cloudinaryUrl = data.secure_url;
+      setTimeout(function() { progress.style.display = 'none'; bar.style.width = '0%'; }, 800);
+      showToast('Photo uploaded to cloud! ✦');
+    } else {
+      throw new Error(data.error ? data.error.message : 'Upload failed');
+    }
+  } catch(e) {
+    progress.style.display = 'none';
+    bar.style.width = '0%';
+    showToast('Upload failed: ' + e.message);
+    // Fallback — keep local base64 preview
+    var reader2 = new FileReader();
+    reader2.onload = function(ev) {
+      document.getElementById('pfImgPreview').innerHTML = '<img src="' + ev.target.result + '" alt="preview"/>';
+    };
+    reader2.readAsDataURL(file);
+  }
 }
 
 async function saveProduct() {
@@ -1310,10 +1389,20 @@ async function saveProduct() {
     desc:     document.getElementById('pf-desc').value.trim(),
     sizes:    document.getElementById('pf-sizes').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean) || ['One Size'],
     emoji:    document.getElementById('pf-emoji').value || '👗',
-    img:      imgEl ? imgEl.src : ''
+    img:      (function() {
+      var fileInput = document.getElementById('pf-img');
+      // Prefer Cloudinary URL if available
+      if (fileInput && fileInput.dataset.cloudinaryUrl) return fileInput.dataset.cloudinaryUrl;
+      // Otherwise use whatever is in the preview (existing URL or base64 fallback)
+      return imgEl ? imgEl.src : '';
+    })()
   };
   if (!prod.original) delete prod.original;
   if (!prod.badge) delete prod.badge;
+  // Save image to localStorage separately (keeps JSONBin slim)
+  if (prod.img && prod.img.length > 500) {
+    try { localStorage.setItem('utp_img_' + prod.id, prod.img); } catch(e) {}
+  }
   if (editingId) {
     var idx = store.products.findIndex(function(x) { return x.id === editingId; });
     store.products[idx] = prod;
@@ -1331,6 +1420,7 @@ async function saveProduct() {
 async function deleteProduct(id) {
   if (!confirm('Delete this product? This cannot be undone.')) return;
   store.products = store.products.filter(function(x) { return x.id !== id; });
+  try { localStorage.removeItem('utp_img_' + id); } catch(e) {} // clean up image
   dbSave();
   renderAdminProducts();
   document.getElementById('statCount').textContent = store.products.length;
